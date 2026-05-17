@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SkyCast AI | Climate Orchestrator 2026</title>
+    <link rel="stylesheet" href="style.css">
+    <!-- Google Fonts: Inter -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Marked for Markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <!-- React & Babel for SPA logic -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        function MarkdownMessage({ content }) {
+            // marked.parse restituisce HTML. Lo sanitizziamo con DOMPurify.
+            const raw = marked.parse(content, { breaks: true, gfm: true });
+            const html = DOMPurify.sanitize(raw);
+            return <div className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />;
+        }
+
+        function App() {
+            const [query, setQuery] = useState('');
+            const [chat, setChat] = useState([]);
+            const [history, setHistory] = useState([]);
+            const [loading, setLoading] = useState(false);
+            const [userContext, setUserContext] = useState({
+                lat: null,
+                lon: null,
+                date: new Date().toLocaleDateString('it-IT')
+            });
+            const scrollRef = useRef(null);
+            const inputRef = useRef(null);
+
+            useEffect(() => {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(
+                        (position) => {
+                            setUserContext(prev => ({
+                                ...prev,
+                                lat: position.coords.latitude,
+                                lon: position.coords.longitude
+                            }));
+                        },
+                        (error) => {
+                            console.warn("Geolocalizzazione negata o non disponibile:", error.message);
+                        }
+                    );
+                }
+            }, []);
+
+            useEffect(() => {
+                if (scrollRef.current) {
+                    scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                }
+                lucide.createIcons();
+                // Focus persistente
+                if (inputRef.current) inputRef.current.focus();
+            }, [chat, loading]);
+
+            const handleSubmit = async (e) => {
+                e.preventDefault();
+                if (!query.trim() || loading) return;
+
+                const userMsg = { role: 'user', parts: [{ text: query }] };
+                const newChat = [...chat, { role: 'user', text: query }];
+                
+                setChat(newChat);
+                setQuery('');
+                setLoading(true);
+
+                try {
+                    const response = await fetch('/api/query', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ query, history, userContext })
+                    });
+                    const data = await response.json();
+                    
+                    if (response.status === 429) {
+                        const waitMsg = data.message || `Soglia raggiunta. Riprova tra ${data.retryAfter || 60} secondi.`;
+                        setChat([...newChat, { role: 'model', text: waitMsg, error: true }]);
+                        return;
+                    }
+
+                    if (data.error) {
+                        setChat([...newChat, { role: 'model', text: data.error, error: true }]);
+                        return;
+                    }
+
+                    const modelMsg = { role: 'model', parts: [{ text: data.response }] };
+                    setChat([...newChat, { role: 'model', text: data.response }]);
+                    setHistory([...history, userMsg, modelMsg]);
+                } catch (err) {
+                    setChat([...newChat, { role: 'model', text: 'Errore di connessione al server.', error: true }]);
+                } finally {
+                    setLoading(false);
+                    // Forza il focus dopo il caricamento
+                    setTimeout(() => inputRef.current?.focus(), 50);
+                }
+            };
+
+            return (
+                <div className="app-container">
+                    <header className="header">
+                        <div className="logo">
+                            <i data-lucide="cloud-lightning" className="neon-blue"></i>
+                            <h1>SkyCast <span>AI</span></h1>
+                        </div>
+                        <div className="status-badge">
+                            <span className="dot"></span> Agentic Workflow v0.35.x
+                        </div>
+                    </header>
+
+                    <main className="chat-area" ref={scrollRef}>
+                        {chat.length === 0 && (
+                            <div className="welcome-msg">
+                                <i data-lucide="sparkles" size="48"></i>
+                                <h2>Benvenuto nel futuro del clima</h2>
+                                <p>Chiedimi previsioni attuali o confronta i dati storici dal 1940.</p>
+                            </div>
+                        )}
+                        {chat.map((msg, i) => (
+                            <div key={i} className={`message-wrapper ${msg.role}`}>
+                                <div className="message-content">
+                                    <span className="role-tag">{msg.role === 'user' ? 'Tu' : 'SkyCast'}</span>
+                                    {msg.role === 'model' ? (
+                                        <MarkdownMessage content={msg.text} />
+                                    ) : (
+                                        <p>{msg.text}</p>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                        {loading && (
+                            <div className="message-wrapper model loading">
+                                <div className="typing-indicator">
+                                    <span></span><span></span><span></span>
+                                </div>
+                            </div>
+                        )}
+                    </main>
+
+                    <form className="input-area" onSubmit={handleSubmit}>
+                        <div className="input-glass">
+                            <input 
+                                type="text" 
+                                ref={inputRef}
+                                value={query}
+                                onChange={(e) => setQuery(e.target.value)}
+                                placeholder="Chiedi qualcosa a SkyCast..."
+                                disabled={loading}
+                                autoFocus
+                            />
+                            <button type="submit" disabled={loading || !query.trim()}>
+                                <i data-lucide="send"></i>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
