@@ -8,9 +8,21 @@ A differenza di una normale app meteo, SkyCast *agisce*: riceve la domanda dell'
 
 **Flusso:**
 1. L'utente invia una query — il frontend allega automaticamente coordinate GPS e data corrente
-2. Gemini analizza l'intent e invoca i tool necessari (`get_coordinates`, `get_weather_forecast`, `get_historical_climatology`, `get_air_quality`, `get_marine_data`)
+2. Gemini analizza l'intent e invoca i tool necessari; ogni chiamata appare in tempo reale come pillola animata nell'interfaccia
 3. I dati grezzi vengono validati contro soglie WMO/OMS — eventuali alert di sicurezza vengono iniettati nel contesto
-4. Gemini genera una risposta Markdown con analisi tecnica verticale
+4. Gemini genera la risposta in **streaming**, che appare progressivamente nella chat
+
+## Tool disponibili
+
+| Tool | Fonte | Utilizzo |
+| :--- | :--- | :--- |
+| `get_coordinates` | Nominatim | Risolve nome città → coordinate |
+| `get_weather_forecast` | Open-Meteo | Previsioni 7 giorni + dati attuali |
+| `get_historical_climatology` | Open-Meteo Archive | Dati storici dal 1940 |
+| `get_air_quality` | Open-Meteo AQI | PM10, PM2.5, O3, NO2 |
+| `get_marine_data` | Open-Meteo Marine | Onde, correnti, temperatura marina |
+| `get_pollen_data` | Open-Meteo AQI | Polline (betulla, graminacee, olivo, ambrosia…) |
+| `get_tide_forecast` | WorldTides API | Alta/bassa marea per 3 giorni |
 
 ## Verticali supportate
 
@@ -20,16 +32,16 @@ A differenza di una normale app meteo, SkyCast *agisce*: riceve la domanda dell'
 | **Energia** | Radiazione solare — potenziale fotovoltaico |
 | **Agricoltura** | Umidità suolo (0-7cm), precipitazioni — stress idrico, irrigazione |
 | **Logistica** | Visibilità, raffiche di vento — sicurezza trasporti |
-| **Marittimo** | Altezza/direzione/periodo onde, correnti, SST — navigazione |
-| **Salute** | PM10, PM2.5, O3, NO2, UV — qualità dell'aria |
+| **Marittimo** | Onde, correnti, SST, maree — navigazione e operazioni portuali |
+| **Salute** | PM10, PM2.5, O3, NO2, UV, polline — qualità dell'aria e allergie stagionali |
 
 ## Stack
 
 - **Runtime:** Node.js v25.2.0+ (ESM)
-- **AI:** `@google/generative-ai` — Gemini 2.5 Flash con Function Calling
+- **AI:** `@google/generative-ai` — Gemini 2.5 Flash con Function Calling + streaming SSE
 - **Backend:** Express 5
 - **Frontend:** SPA Vanilla JS/CSS + React 18 (CDN) + Marked.js
-- **Dati:** [Open-Meteo](https://open-meteo.com/) (previsioni, storico dal 1940, qualità aria, dati marini) + [Nominatim](https://nominatim.org/) (geocoding)
+- **Dati:** [Open-Meteo](https://open-meteo.com/) · [Nominatim](https://nominatim.org/) · [WorldTides](https://www.worldtides.info/)
 
 ## Installazione
 
@@ -43,7 +55,7 @@ npm install
 
 # 3. Configura le variabili d'ambiente
 cp .env.example .env
-# Modifica .env e inserisci la tua GEMINI_API_KEY
+# Modifica .env e inserisci le tue chiavi API
 
 # 4. Avvia il server
 npm start
@@ -53,15 +65,14 @@ Apri `http://localhost:3000` nel browser e consenti l'accesso alla posizione per
 
 ## Configurazione
 
-Copia `.env.example` in `.env` e compila:
-
 ```env
-GEMINI_API_KEY=la_tua_chiave_api
-GEMINI_MODEL_NAME=gemini-2.5-flash
+GEMINI_API_KEY=la_tua_chiave          # Obbligatoria — aistudio.google.com
+GEMINI_MODEL_NAME=gemini-2.5-flash    # Modello Gemini da usare
 PORT=3000
+WORLDTIDES_API_KEY=la_tua_chiave      # Opzionale — worldtides.info (free tier 100 req/day)
 ```
 
-Ottieni una chiave API gratuita su [Google AI Studio](https://aistudio.google.com/).
+Senza `WORLDTIDES_API_KEY` il tool maree non è disponibile; tutti gli altri funzionano normalmente.
 
 ## Struttura del progetto
 
@@ -69,20 +80,20 @@ Ottieni una chiave API gratuita su [Google AI Studio](https://aistudio.google.co
 src/
 ├── server.js                  # Entry point Express
 ├── routes/
-│   ├── query.route.js         # POST /api/query — orchestrazione agentica
-│   └── weather.route.js       # GET /api/geo, /api/weather/* — dati grezzi
+│   ├── query.route.js         # POST /api/query — orchestrazione agentica (SSE)
+│   └── weather.route.js       # GET /api/weather/*, /api/model — dati grezzi
 ├── services/
-│   ├── geminiService.js       # Loop di function calling, definizione tool
-│   ├── weatherService.js      # Wrapper Open-Meteo API
+│   ├── geminiService.js       # Loop function calling + streaming SSE
+│   ├── weatherService.js      # Wrapper Open-Meteo, WorldTides
 │   └── geoService.js          # Geocoding Nominatim
 ├── utils/
-│   ├── validator.js           # Validazione soglie WMO/OMS
+│   ├── validator.js           # Validazione soglie WMO/OMS/EAN
 │   └── thresholds.js          # Costanti di soglia per settore
 └── config/
     └── prompts.json           # Istruzioni di sistema e linee guida verticali
 
 public/
-├── index.html                 # SPA frontend
+├── index.html                 # SPA frontend (React 18 CDN + Babel)
 └── style.css                  # Dark theme / glassmorphism
 ```
 
@@ -91,8 +102,9 @@ public/
 - *"Che tempo fa?"* — analisi per la posizione corrente
 - *"Posso gettare il cemento domani?"* — analisi edilizia con controllo temperatura suolo e vento
 - *"Pioveva di più qui 30 anni fa?"* — confronto storico automatico (archivio dal 1940)
-- *"Qualità dell'aria a Milano questa settimana"* — report PM10/PM2.5/O3
-- *"Condizioni di navigazione al largo di Genova"* — analisi marittima
+- *"Livelli di polline a Firenze questa settimana"* — report allergie stagionali
+- *"Maree a Venezia domani"* — orari e altezze alta/bassa marea
+- *"Condizioni di navigazione al largo di Genova"* — analisi marittima completa
 
 ## Licenza
 
