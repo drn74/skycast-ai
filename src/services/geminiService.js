@@ -1,6 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getCoordinates } from './geoService.js';
-import { getWeatherForecast, getHistoricalClimatology, getAirQuality, getMarineData } from './weatherService.js';
+import { getWeatherForecast, getHistoricalClimatology, getAirQuality, getMarineData, getPollenData, getTideForecast } from './weatherService.js';
 import { validateEnvironmentalData } from '../utils/validator.js';
 import prompts from '../config/prompts.json' with { type: 'json' };
 
@@ -20,6 +20,8 @@ const TOOL_HANDLERS = {
   get_historical_climatology: (args) => getHistoricalClimatology(args.lat, args.lon, args.start_date, args.end_date),
   get_air_quality:          (args) => getAirQuality(args.lat, args.lon),
   get_marine_data:          (args) => getMarineData(args.lat, args.lon),
+  get_pollen_data:          (args) => getPollenData(args.lat, args.lon),
+  get_tide_forecast:        (args) => getTideForecast(args.lat, args.lon),
 };
 
 const apiKey = process.env.GEMINI_API_KEY;
@@ -85,6 +87,30 @@ const tools = [
       {
         name: 'get_marine_data',
         description: 'Recupera dati marini (altezza onde, direzione, periodo, velocità correnti, temperatura superficie marina). Usa per query su navigazione, sport acquatici e sicurezza marittima.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            lat: { type: 'NUMBER', description: 'Latitudine' },
+            lon: { type: 'NUMBER', description: 'Longitudine' }
+          },
+          required: ['lat', 'lon']
+        }
+      },
+      {
+        name: 'get_pollen_data',
+        description: 'Recupera dati sul polline nell\'aria (ontano, betulla, graminacee, artemisia, olivo, ambrosia). Usa per query su allergie stagionali, qualità dell\'aria primaverile e consulenze per pazienti allergici.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            lat: { type: 'NUMBER', description: 'Latitudine' },
+            lon: { type: 'NUMBER', description: 'Longitudine' }
+          },
+          required: ['lat', 'lon']
+        }
+      },
+      {
+        name: 'get_tide_forecast',
+        description: 'Recupera le previsioni di alta e bassa marea per i prossimi 3 giorni (orari e altezze in metri). Usa per query su navigazione costiera, pesca, sport acquatici e operazioni portuali.',
         parameters: {
           type: 'OBJECT',
           properties: {
@@ -195,6 +221,130 @@ export async function processWeatherQuery(userInput, history = [], userContext =
     console.error('Errore in GeminiService:', error);
 
     // Gestione specifica dell'errore 429 (Too Many Requests / Quota Exceeded)
+    if (error.status === 429 || error.response?.status === 429 || error.message?.includes('429')) {
+      let retryAfter = 60;
+      try {
+        const details = error.response?.data?.error?.details || [];
+        const quotaFailure = details.find(d => d.retryDelay || d['@type']?.includes('RetryInfo'));
+        if (quotaFailure?.retryDelay) {
+          retryAfter = parseInt(quotaFailure.retryDelay) || 60;
+        }
+      } catch (_) { /* fallback al default */ }
+
+      throw new QuotaExceededError(retryAfter);
+    }
+
+    throw error;
+  }
+}
+
+export async function processWeatherQueryStream(userInput, history = [], userContext = null, onChunk, onToolCall) {
+  try {
+    const today = new Date().toLocaleDateString('it-IT', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    });
+
+    const details = userContext?.lat && userContext?.lon
+      ? `Lat=${userContext.lat}, Lon=${userContext.lon}`
+      : (userContext?.date ? `Date=${userContext.date}` : 'Nessuno');
+
+    const finalInput = prompts.context_template
+      .replace('%1', today)
+      .replace('%2', details)
+      .replace('%3', userInput);
+
+    const chat = model.startChat({ history });
+    let result = await chat.sendMessage(finalInput);
+    let response = result.response;
+
+    let iterations = 0;
+
+    while (response.functionCalls()?.length > 0 && iterations < MAX_TOOL_ITERATIONS) {
+      iterations++;
+      const callResults = await Promise.all(
+        response.functionCalls().map(async (call) => {
+          const { name, args } = call;
+          let output;
+
+          console.log(`[AI Calling Tool]: ${name}`, args);
+
+          try {
+            const handler = TOOL_HANDLERS[name];
+            if (handler) {
+              if (onToolCall) onToolCall(name);
+              output = await handler(args);
+
+              const safetyReport = validateEnvironmentalData(name, output);
+              if (safetyReport && safetyReport.alerts?.length > 0) {
+                const reasons = safetyReport.alerts.map(a => `[${a.severity}] ${a.reason}`).join(' | ');
+                output = {
+                  ...output,
+                  _SAFETY_NOTICE: prompts.safety_alert_template.replace('%1', reasons)
+                };
+              }
+            } else {
+              output = { error: `Funzione non riconosciuta: ${name}` };
+            }
+          } catch (error) {
+            output = { error: error.message };
+          }
+
+          return {
+            functionResponse: {
+              name,
+              response: { content: output }
+            }
+          };
+        })
+      );
+
+      // Tenta streaming sull'ultima chiamata tool
+      try {
+        const streamResult = await chat.sendMessageStream(callResults);
+        let accumulatedText = '';
+        let hasText = false;
+
+        for await (const chunk of streamResult.stream) {
+          const chunkText = chunk.text();
+          if (chunkText) {
+            hasText = true;
+            accumulatedText += chunkText;
+            onChunk(chunkText);
+          }
+        }
+
+        response = await streamResult.response;
+
+        if (response.functionCalls()?.length > 0) {
+          continue;
+        }
+
+        return accumulatedText;
+      } catch (streamError) {
+        // Fallback a sendMessage sincrono se lo streaming fallisce
+        result = await chat.sendMessage(callResults);
+        response = result.response;
+      }
+    }
+
+    if (iterations >= MAX_TOOL_ITERATIONS) {
+      console.warn(`[GeminiService] Raggiunto il limite di ${MAX_TOOL_ITERATIONS} iterazioni tool per questa query.`);
+    }
+
+    // Nessuna tool call: simula streaming dividendo il testo in chunk
+    const fullText = response.text();
+    const chunkSize = 15;
+    for (let i = 0; i < fullText.length; i += chunkSize) {
+      onChunk(fullText.slice(i, i + chunkSize));
+      await new Promise(r => setTimeout(r, 8));
+    }
+
+    return fullText;
+  } catch (error) {
+    console.error('Errore in GeminiService (Stream):', error);
+
     if (error.status === 429 || error.response?.status === 429 || error.message?.includes('429')) {
       let retryAfter = 60;
       try {

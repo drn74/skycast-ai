@@ -316,6 +316,53 @@ body {
     40% { transform: scale(1); }
 }
 
+/* --- Tool Call Pills --- */
+.tool-pills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.75rem;
+}
+
+.tool-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.72rem;
+    padding: 0.25rem 0.65rem;
+    border-radius: 20px;
+    border: 1px solid rgba(0, 242, 255, 0.35);
+    background: rgba(0, 242, 255, 0.06);
+    color: var(--accent);
+    transition: opacity 0.6s ease, color 0.4s ease, border-color 0.4s ease;
+    white-space: nowrap;
+}
+
+.tool-pill.done {
+    opacity: 0.35;
+    border-color: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.4);
+}
+
+.tool-spinner {
+    width: 8px;
+    height: 8px;
+    border: 1.5px solid rgba(0, 242, 255, 0.25);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.75s linear infinite;
+    flex-shrink: 0;
+}
+
+.tool-check {
+    font-size: 0.65rem;
+    flex-shrink: 0;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
 /* --- Responsive --- */
 @media (max-width: 768px) {
     .header { padding: 1rem; }

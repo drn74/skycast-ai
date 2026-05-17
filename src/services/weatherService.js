@@ -119,3 +119,53 @@ export async function getMarineData(lat, lon) {
     throw error;
   }
 }
+
+export async function getPollenData(lat, lon) {
+  const key = `pollen:${lat.toFixed(2)}:${lon.toFixed(2)}`;
+  const cached = weatherCache.get(key);
+  if (cached) return cached;
+  try {
+    const response = await axios.get('https://air-quality-api.open-meteo.com/v1/air-quality', {
+      params: {
+        latitude: lat,
+        longitude: lon,
+        hourly: 'alder_pollen,birch_pollen,grass_pollen,mugwort_pollen,olive_pollen,ragweed_pollen',
+        timezone: 'auto'
+      },
+      timeout: 10000
+    });
+    weatherCache.set(key, response.data, 600);
+    return response.data;
+  } catch (error) {
+    console.error('Errore in WeatherService (Pollen):', error.message);
+    throw error;
+  }
+}
+
+export async function getTideForecast(lat, lon) {
+  const key = `tides:${lat.toFixed(2)}:${lon.toFixed(2)}`;
+  const cached = weatherCache.get(key);
+  if (cached) return cached;
+  const apiKey = process.env.WORLDTIDES_API_KEY;
+  if (!apiKey) {
+    throw new Error('WORLDTIDES_API_KEY non configurata nel file .env');
+  }
+  try {
+    const response = await axios.get('https://www.worldtides.info/api/v3', {
+      params: {
+        tides: true,
+        lat,
+        lon,
+        key: apiKey,
+        days: 3,
+        datum: 'CD'
+      },
+      timeout: 10000
+    });
+    weatherCache.set(key, response.data, 3600);
+    return response.data;
+  } catch (error) {
+    console.error('Errore in WeatherService (Tides):', error.message);
+    throw error;
+  }
+}

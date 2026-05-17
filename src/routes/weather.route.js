@@ -84,4 +84,8 @@ router.get('/weather/marine', async (req, res) => {
   }
 });
 
+router.get('/model', (req, res) => {
+  res.json({ model: process.env.GEMINI_MODEL_NAME || 'gemini-2.5-flash' });
+});
+
 export default router;

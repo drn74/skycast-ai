@@ -26,11 +26,43 @@
     <script type="text/babel">
         const { useState, useEffect, useRef } = React;
 
-        function MarkdownMessage({ content }) {
-            // marked.parse restituisce HTML. Lo sanitizziamo con DOMPurify.
-            const raw = marked.parse(content, { breaks: true, gfm: true });
+        const TOOL_LABELS = {
+            get_coordinates:           'Geolocalizzazione',
+            get_weather_forecast:      'Previsioni meteo',
+            get_historical_climatology:'Dati storici',
+            get_air_quality:           "Qualità dell'aria",
+            get_marine_data:           'Dati marini',
+            get_pollen_data:           'Dati polline',
+            get_tide_forecast:         'Previsioni maree',
+        };
+
+        function ToolPills({ tools }) {
+            if (!tools || tools.length === 0) return null;
+            return (
+                <div className="tool-pills">
+                    {tools.map((t, i) => (
+                        <span key={i} className={`tool-pill ${t.status === 'done' ? 'done' : ''}`}>
+                            {t.status === 'running'
+                                ? <span className="tool-spinner"></span>
+                                : <span className="tool-check">✓</span>
+                            }
+                            {TOOL_LABELS[t.name] || t.name}
+                        </span>
+                    ))}
+                </div>
+            );
+        }
+
+        function MarkdownMessage({ content, streaming, tools }) {
+            const displayContent = streaming && content ? content + '|' : content;
+            const raw = marked.parse(displayContent || '', { breaks: true, gfm: true });
             const html = DOMPurify.sanitize(raw);
-            return <div className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />;
+            return (
+                <div>
+                    <ToolPills tools={tools} />
+                    <div className="markdown-body" dangerouslySetInnerHTML={{ __html: html }} />
+                </div>
+            );
         }
 
         function App() {
@@ -38,6 +70,7 @@
             const [chat, setChat] = useState([]);
             const [history, setHistory] = useState([]);
             const [loading, setLoading] = useState(false);
+            const [modelName, setModelName] = useState('...');
             const [userContext, setUserContext] = useState({
                 lat: null,
                 lon: null,
@@ -45,6 +78,13 @@
             });
             const scrollRef = useRef(null);
             const inputRef = useRef(null);
+
+            useEffect(() => {
+                fetch('/api/model')
+                    .then(r => r.json())
+                    .then(d => setModelName(d.model))
+                    .catch(() => setModelName('gemini'));
+            }, []);
 
             useEffect(() => {
                 if (navigator.geolocation) {
@@ -77,8 +117,9 @@
                 if (!query.trim() || loading) return;
 
                 const userMsg = { role: 'user', parts: [{ text: query }] };
-                const newChat = [...chat, { role: 'user', text: query }];
-                
+                const currentQuery = query;
+                const newChat = [...chat, { role: 'user', text: currentQuery }, { role: 'model', text: '', streaming: true, tools: [] }];
+
                 setChat(newChat);
                 setQuery('');
                 setLoading(true);
@@ -86,30 +127,92 @@
                 try {
                     const response = await fetch('/api/query', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ query, history, userContext })
+                        headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+                        body: JSON.stringify({ query: currentQuery, history, userContext })
                     });
-                    const data = await response.json();
-                    
-                    if (response.status === 429) {
-                        const waitMsg = data.message || `Soglia raggiunta. Riprova tra ${data.retryAfter || 60} secondi.`;
-                        setChat([...newChat, { role: 'model', text: waitMsg, error: true }]);
-                        return;
-                    }
 
-                    if (data.error) {
-                        setChat([...newChat, { role: 'model', text: data.error, error: true }]);
-                        return;
-                    }
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    let accumulatedText = '';
+                    let textStarted = false;
 
-                    const modelMsg = { role: 'model', parts: [{ text: data.response }] };
-                    setChat([...newChat, { role: 'model', text: data.response }]);
-                    setHistory([...history, userMsg, modelMsg]);
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split('\n');
+                        buffer = lines.pop();
+
+                        for (const line of lines) {
+                            if (!line.startsWith('data: ')) continue;
+                            const raw = line.slice(6);
+                            if (raw === '[DONE]') {
+                                setChat(prev => {
+                                    const updated = [...prev];
+                                    updated[updated.length - 1] = { role: 'model', text: accumulatedText };
+                                    return updated;
+                                });
+                                const modelMsg = { role: 'model', parts: [{ text: accumulatedText }] };
+                                setHistory(prev => [...prev, userMsg, modelMsg]);
+                                continue;
+                            }
+                            let parsed;
+                            try { parsed = JSON.parse(raw); } catch (_) { continue; }
+
+                            if (parsed.toolCall) {
+                                setChat(prev => {
+                                    const updated = [...prev];
+                                    const last = { ...updated[updated.length - 1] };
+                                    last.tools = [...(last.tools || []), { name: parsed.toolCall, status: 'running' }];
+                                    updated[updated.length - 1] = last;
+                                    return updated;
+                                });
+                            } else if (parsed.chunk) {
+                                if (!textStarted) {
+                                    textStarted = true;
+                                    setChat(prev => {
+                                        const updated = [...prev];
+                                        const last = { ...updated[updated.length - 1] };
+                                        last.tools = (last.tools || []).map(t => ({ ...t, status: 'done' }));
+                                        updated[updated.length - 1] = last;
+                                        return updated;
+                                    });
+                                }
+                                accumulatedText += parsed.chunk;
+                                setChat(prev => {
+                                    const updated = [...prev];
+                                    const last = { ...updated[updated.length - 1] };
+                                    last.text = accumulatedText;
+                                    last.streaming = true;
+                                    updated[updated.length - 1] = last;
+                                    return updated;
+                                });
+                            } else if (parsed.error === 'quota') {
+                                const waitMsg = `Soglia raggiunta. Riprova tra ${parsed.retryAfter || 60} secondi.`;
+                                setChat(prev => {
+                                    const updated = [...prev];
+                                    updated[updated.length - 1] = { role: 'model', text: waitMsg, error: true };
+                                    return updated;
+                                });
+                            } else if (parsed.error) {
+                                setChat(prev => {
+                                    const updated = [...prev];
+                                    updated[updated.length - 1] = { role: 'model', text: 'Si è verificato un errore interno al server.', error: true };
+                                    return updated;
+                                });
+                            }
+                        }
+                    }
                 } catch (err) {
-                    setChat([...newChat, { role: 'model', text: 'Errore di connessione al server.', error: true }]);
+                    setChat(prev => {
+                        const updated = [...prev];
+                        updated[updated.length - 1] = { role: 'model', text: 'Errore di connessione al server.', error: true };
+                        return updated;
+                    });
                 } finally {
                     setLoading(false);
-                    // Forza il focus dopo il caricamento
                     setTimeout(() => inputRef.current?.focus(), 50);
                 }
             };
@@ -118,11 +221,11 @@
                 <div className="app-container">
                     <header className="header">
                         <div className="logo">
-                            <i data-lucide="cloud-lightning" className="neon-blue"></i>
+                            <i data-lucide="cloud-sun" className="neon-blue"></i>
                             <h1>SkyCast <span>AI</span></h1>
                         </div>
                         <div className="status-badge">
-                            <span className="dot"></span> Agentic Workflow v0.35.x
+                            <span className="dot"></span> {modelName}
                         </div>
                     </header>
 
@@ -139,14 +242,14 @@
                                 <div className="message-content">
                                     <span className="role-tag">{msg.role === 'user' ? 'Tu' : 'SkyCast'}</span>
                                     {msg.role === 'model' ? (
-                                        <MarkdownMessage content={msg.text} />
+                                        <MarkdownMessage content={msg.text} streaming={msg.streaming} tools={msg.tools} />
                                     ) : (
                                         <p>{msg.text}</p>
                                     )}
                                 </div>
                             </div>
                         ))}
-                        {loading && (
+                        {loading && !chat.some(m => m.streaming) && (
                             <div className="message-wrapper model loading">
                                 <div className="typing-indicator">
                                     <span></span><span></span><span></span>

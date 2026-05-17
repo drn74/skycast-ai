@@ -1,4 +1,4 @@
-import { THRESHOLDS } from './thresholds.js';
+import { THRESHOLDS, POLLEN_THRESHOLDS } from './thresholds.js';
 
 /**
  * Valida i dati ambientali estratti dai tool deterministici di SkyCast AI.
@@ -113,7 +113,32 @@ export function validateEnvironmentalData(toolName, data) {
     }
   }
 
-  // 5. Historical Data Guard
+  // 5. Pollen Data Validation
+  if (toolName === 'get_pollen_data') {
+    const pollenTypes = ['grass_pollen', 'birch_pollen', 'ragweed_pollen', 'olive_pollen'];
+    for (const pollenType of pollenTypes) {
+      const values = data.hourly?.[pollenType];
+      if (!values?.length) continue;
+      const last24 = values.filter(v => v !== null).slice(-24);
+      if (last24.length === 0) continue;
+      const maxVal = Math.max(...last24);
+      const thresholds = POLLEN_THRESHOLDS[pollenType];
+      if (!thresholds) continue;
+      if (maxVal > thresholds.very_high) {
+        foundAlerts.push({
+          reason: `Livello critico di polline (${pollenType.replace('_pollen', '')}) - rischio reazione allergica grave (${maxVal} grani/m³)`,
+          severity: 'HIGH'
+        });
+      } else if (maxVal > thresholds.high) {
+        foundAlerts.push({
+          reason: `Livello alto di polline (${pollenType.replace('_pollen', '')}) rilevato (${maxVal} grani/m³)`,
+          severity: 'MEDIUM'
+        });
+      }
+    }
+  }
+
+  // 6. Historical Data Guard
   if (toolName === 'get_historical_climatology') {
     const validMaxTemp = data.daily?.temperature_2m_max?.filter(v => v !== null) || [];
     if (validMaxTemp.length === 0) {

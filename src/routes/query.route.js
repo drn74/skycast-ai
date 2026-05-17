@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
-import { processWeatherQuery, QuotaExceededError } from '../services/geminiService.js';
+import { processWeatherQuery, processWeatherQueryStream, QuotaExceededError } from '../services/geminiService.js';
 
 const router = Router();
 
@@ -46,7 +46,32 @@ router.post('/', queryLimiter, async (req, res) => {
   const safeHistory = Array.isArray(history) ? history.slice(-MAX_HISTORY_ITEMS) : [];
 
   console.log(`[Server] Ricevuta query: "${query}" (History length: ${safeHistory.length})`);
-  
+
+  if (req.headers.accept?.includes('text/event-stream')) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.write('');
+
+    try {
+      await processWeatherQueryStream(
+        query, safeHistory, userContext,
+        (text) => { res.write(`data: ${JSON.stringify({ chunk: text })}\n\n`); },
+        (name) => { res.write(`data: ${JSON.stringify({ toolCall: name })}\n\n`); }
+      );
+      res.write('data: [DONE]\n\n');
+      res.end();
+    } catch (err) {
+      if (err instanceof QuotaExceededError) {
+        res.write(`data: ${JSON.stringify({ error: 'quota', retryAfter: err.retryAfter })}\n\n`);
+      } else {
+        res.write(`data: ${JSON.stringify({ error: 'server' })}\n\n`);
+      }
+      res.end();
+    }
+    return;
+  }
+
   try {
     const response = await processWeatherQuery(query, safeHistory, userContext);
     res.json({ response });

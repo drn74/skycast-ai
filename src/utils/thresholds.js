@@ -54,3 +54,10 @@ export const THRESHOLDS = {
     severity: 'MEDIUM'
   }
 };
+
+export const POLLEN_THRESHOLDS = {
+  grass_pollen:   { medium: 10, high: 50, very_high: 200 },
+  birch_pollen:   { medium: 10, high: 50, very_high: 200 },
+  ragweed_pollen: { medium: 10, high: 30, very_high: 100 },
+  olive_pollen:   { medium: 10, high: 50, very_high: 200 },
+};
